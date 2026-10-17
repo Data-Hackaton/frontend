@@ -40,6 +40,8 @@ export interface AuditEventView {
   score?: number
   rule?: string
   evidenceUrls?: string[]
+  /** Классы боксов, относящиеся к событию: их подсвечивает режим «Нарушения» над видео. */
+  classes?: string[]
 }
 
 /** Normalized [x1,y1,x2,y2] coordinates (0..1), converted to pixels in the API adapter. */

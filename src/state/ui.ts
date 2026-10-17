@@ -15,7 +15,9 @@ interface UiState {
   catalogGroup: 'all' | 'violation' | 'warning' | 'quality' | 'expected'
   editorTab: 'boxes' | 'events' | 'training'
   eventEditorTab: 'catalog' | 'custom'
-  overlayVisible: boolean
+  /** Боксы над видео: только относящиеся к нарушению в текущий момент, все (кроме скрытых классов) или никаких. */
+  boxMode: 'violations' | 'all' | 'hidden'
+  hiddenClasses: string[]
   playbackTime: number
   boxDrafts: Record<string, BoxView[]>
   notificationsOpen: boolean
@@ -29,7 +31,8 @@ interface UiState {
   setEditorTab: (tab: UiState['editorTab']) => void
   setEventEditorTab: (tab: UiState['eventEditorTab']) => void
   selectEvent: (id: string | null) => void
-  toggleOverlay: () => void
+  setBoxMode: (mode: UiState['boxMode']) => void
+  toggleClass: (cls: string) => void
   setPlaybackTime: (time: number) => void
   setBoxDraft: (key: string, boxes: BoxView[]) => void
   clearBoxDraft: (key: string) => void
@@ -43,7 +46,7 @@ const modes: WorkspaceMode[] = ['view', 'audit', 'training']
 export const useUi = create<UiState>()(persist((set, get) => ({
   route: 'overview', mode: 'view', videoId: null, eventId: null, selectedDate: null,
   reviewFilter: 'pending', catalogQuery: '', catalogGroup: 'all', editorTab: 'boxes',
-  eventEditorTab: 'catalog', overlayVisible: true, playbackTime: 0, boxDrafts: {}, notificationsOpen: false, readNoticeIds: [],
+  eventEditorTab: 'catalog', boxMode: 'violations', hiddenClasses: [], playbackTime: 0, boxDrafts: {}, notificationsOpen: false, readNoticeIds: [],
   navigate: (route, options = {}) => {
     const mode = options.mode ?? get().mode
     const videoId = options.videoId ?? get().videoId
@@ -65,7 +68,11 @@ export const useUi = create<UiState>()(persist((set, get) => ({
   setEditorTab: editorTab => set({ editorTab }),
   setEventEditorTab: eventEditorTab => set({ eventEditorTab }),
   selectEvent: eventId => set({ eventId }),
-  toggleOverlay: () => set({ overlayVisible: !get().overlayVisible }),
+  setBoxMode: boxMode => set({ boxMode }),
+  toggleClass: cls => {
+    const hidden = get().hiddenClasses
+    set({ hiddenClasses: hidden.includes(cls) ? hidden.filter(item => item !== cls) : [...hidden, cls] })
+  },
   setPlaybackTime: playbackTime => set({ playbackTime }),
   setBoxDraft: (key, boxes) => set({ boxDrafts: { ...get().boxDrafts, [key]: boxes } }),
   clearBoxDraft: key => { const next = { ...get().boxDrafts }; delete next[key]; set({ boxDrafts: next }) },
@@ -75,5 +82,5 @@ export const useUi = create<UiState>()(persist((set, get) => ({
   name: 'forte-video-audit-ui-v1',
   storage: createJSONStorage(() => localStorage),
   partialize: state => ({ selectedDate: state.selectedDate, reviewFilter: state.reviewFilter,
-    overlayVisible: state.overlayVisible, readNoticeIds: state.readNoticeIds }),
+    boxMode: state.boxMode, hiddenClasses: state.hiddenClasses, readNoticeIds: state.readNoticeIds }),
 }))

@@ -38,6 +38,7 @@ interface ApiVideo {
 }
 interface ApiEvent {
   id: number; video_id: string; type_id: string; event: string; status: 'expected' | 'warning' | 'violation'
+  actor: string | null; object: string | null; target: string | null
   title: string | null; message: string | null; norm: string | null; t_start: number; t_end: number
   review: AuditEventView['review']; review_comment: string | null; source: 'model' | 'human'
   evidence: { t: number; url: string }[]
@@ -67,6 +68,28 @@ const video = (v: ApiVideo): VideoView => ({
     progress: v.last_job.progress ?? undefined, error: v.last_job.error ?? undefined,
   } : undefined,
 })
+
+// --- какие боксы относятся к событию (режим «Нарушения» над видео) ------------------------------------------------
+
+const BY_OBJECT: Record<string, string[]> = {
+  banknotes: ['banknotes', 'id_card'], id_card: ['banknotes', 'id_card'], bag: ['bag'],
+  foreign_object: ['foreign_object', 'bag'], phone: ['phone'], document: ['id_card'],
+}
+const BY_TARGET: Record<string, string[]> = { cash_machine: ['cash_machine'], safe: ['safe'], safe_top: ['safe'] }
+const BY_TITLE: [RegExp, string[]][] = [
+  [/компьютер/i, ['computer']], [/сейф/i, ['safe']], [/деньги|наличн|ценност/i, ['banknotes', 'id_card', 'bag']],
+  [/личные вещи/i, ['foreign_object', 'bag']], [/посторонн/i, ['person']], [/пересч[её]т/i, ['banknotes', 'cash_machine']],
+  [/телефон/i, ['phone']], [/присвоен/i, ['banknotes']],
+]
+
+function classesFor(e: ApiEvent): string[] {
+  const out = new Set<string>()
+  for (const c of BY_OBJECT[e.object ?? ''] ?? []) out.add(c)
+  for (const c of BY_TARGET[e.target ?? ''] ?? []) out.add(c)
+  if (e.actor === 'cashier' || e.actor === 'client' || e.actor === 'visitor') out.add('person')
+  for (const [re, classes] of BY_TITLE) if (e.title && re.test(e.title)) classes.forEach(c => out.add(c))
+  return [...out]
+}
 
 // --- боксы: кэш по записи, обновляется при новом анализе и после правки ----------------------------------------------
 
@@ -117,7 +140,7 @@ export const apiGateway: VideoAuditGateway = {
       id: String(e.id), videoId: e.video_id, typeId: e.type_id, title: e.title ?? typeTitle.get(e.type_id) ?? e.event,
       description: e.message ?? '', kind: e.status, start: e.t_start, end: Math.max(e.t_end, e.t_start),
       review: e.review, reviewComment: e.review_comment ?? undefined, source: e.source, rule: await normShort(e.norm),
-      evidenceUrls: e.evidence.map(x => x.url),
+      evidenceUrls: e.evidence.map(x => x.url), classes: classesFor(e),
     })))
     const eventTypes: EventTypeView[] = apiTypes.map(t => ({
       id: t.id, title: t.title, description: t.description, observable: t.observable, kind: t.kind, custom: t.custom,
