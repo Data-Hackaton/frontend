@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
 import { Check, ChevronRight, Eye, EyeOff, Flag, Layers3, Maximize2, MousePointer2, Pause, PenLine, Play, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import { Button } from './components/arc/button/button'
@@ -24,24 +24,100 @@ const eventWindowSec = 1.5
 const boxModes = [{ id: 'violations', label: 'Нарушения', icon: Flag }, { id: 'all', label: 'Все', icon: Eye },
   { id: 'hidden', label: 'Скрыть', icon: EyeOff }] as const
 
+/* Боксы модели есть только на опорных кадрах (детектор — 4 кадра/с, интерфейс берёт 2). Чтобы рамки не мигали
+   между ними, при просмотре бокс плавно ведётся от одного опорного кадра к следующему: пара — тот же класс
+   с наибольшим перекрытием; бокс без пары держится до середины промежутка. Редактор работает с точными кадрами. */
+const interpolateMaxGapSec = 1.5   // опорные кадры дальше — не интерполируем (детектор пропустил объект)
+const holdSec = .6                 // без пары кадров показываем ближайший, если он не дальше
+type Frames = { times: number[]; byTime: Map<number, BoxView[]> }
+
+function overlap(a: BoxView['bbox'], b: BoxView['bbox']) {
+  const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]))
+  const inter = w * h, union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+  return union > 0 ? inter / union : 0
+}
+
+const matches = (x: BoxView, frame: BoxView[]) => frame.some(y => y.cls === x.cls && overlap(x.bbox, y.bbox) > .2)
+
+/** Кадры записи по времени; объект, который детектор пропустил на кадре-другом и нашёл снова на том же месте
+ *  (не дальше interpolateMaxGapSec), достраивается в пропущенных кадрах — иначе рамка мигает. */
+function indexFrames(boxes: BoxView[]): Frames {
+  const byTime = new Map<number, BoxView[]>()
+  for (const box of boxes) byTime.set(box.time, [...(byTime.get(box.time) ?? []), box])
+  const times = [...byTime.keys()].sort((a, b) => a - b)
+  for (let i = 0; i + 2 < times.length; i++) {
+    for (const x of byTime.get(times[i]) ?? []) {
+      if (x.source === 'human' || matches(x, byTime.get(times[i + 1]) ?? [])) continue
+      for (let j = i + 2; j < times.length && times[j] - times[i] <= interpolateMaxGapSec; j++) {
+        const y = (byTime.get(times[j]) ?? []).find(item => item.cls === x.cls && overlap(x.bbox, item.bbox) > .2)
+        if (!y) continue
+        for (let m = i + 1; m < j; m++) {
+          const k = (times[m] - times[i]) / (times[j] - times[i])
+          byTime.get(times[m])?.push({ ...x, id: `${x.id}~${times[m]}`, time: times[m],
+            bbox: x.bbox.map((v, n) => v + (y.bbox[n] - v) * k) as BoxView['bbox'] })
+        }
+        break
+      }
+    }
+  }
+  return { times, byTime }
+}
+
+function boxesAt({ times, byTime }: Frames, t: number): BoxView[] {
+  if (!times.length) return []
+  let lo = 0, hi = times.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (times[mid] <= t) lo = mid + 1; else hi = mid }
+  const before = lo > 0 ? times[lo - 1] : undefined, after = lo < times.length ? times[lo] : undefined
+  if (before !== undefined && after !== undefined && after - before <= interpolateMaxGapSec) {
+    const a = byTime.get(before) ?? [], b = byTime.get(after) ?? [], k = (t - before) / (after - before)
+    const used = new Set<BoxView>()
+    const out: BoxView[] = []
+    for (const x of a) {
+      let pair: BoxView | undefined, best = .2
+      for (const y of b) if (y.cls === x.cls && !used.has(y)) { const score = overlap(x.bbox, y.bbox); if (score > best) { best = score; pair = y } }
+      if (pair) {
+        used.add(pair)
+        out.push({ ...x, bbox: x.bbox.map((v, i) => v + (pair.bbox[i] - v) * k) as BoxView['bbox'] })
+      } else if (k < .5) out.push(x)
+    }
+    if (k >= .5) out.push(...b.filter(y => !used.has(y)))
+    return out
+  }
+  const near = [before, after].filter((x): x is number => x !== undefined && Math.abs(x - t) <= holdSec)
+    .sort((x, y) => Math.abs(x - t) - Math.abs(y - t))[0]
+  return near === undefined ? [] : byTime.get(near) ?? []
+}
+
 function BoxCanvas({ video, time, allBoxes, events, editing, tool, setTool, selected, setSelected, mutate }: {
   video: VideoView; time: number; allBoxes: BoxView[]; events: AuditEventView[]; editing: boolean; tool: Tool; setTool: (tool: Tool) => void;
   selected: string | null; setSelected: (id: string | null) => void; mutate: Mutate
 }) {
   const ui = useUi()
   const key = video.id + '@' + time.toFixed(3)
-  const source = allBoxes.filter(box => box.videoId === video.id && Math.abs(box.time - time) <= .35)
+  const videoBoxes = useMemo(() => allBoxes.filter(box => box.videoId === video.id), [allBoxes, video.id])
+  const frames = useMemo(() => indexFrames(videoBoxes), [videoBoxes])
+  const source = videoBoxes.filter(box => Math.abs(box.time - time) <= .35)
   const boxes = ui.boxDrafts[key] || source
-  // Что видно над видео. Редактор кадра показывает всё, иначе боксы не поправить.
+  // Во время воспроизведения слой боксов идёт за кадром видео (requestAnimationFrame), а не за timeupdate (~4 раза/с);
+  // время держим локально, чтобы не перерисовывать весь экран 60 раз в секунду
+  const player = useRef<HTMLVideoElement>(null)
+  const [liveTime, setLiveTime] = useState<number | null>(null)
+  const raf = useRef(0)
+  const follow = () => { const element = player.current; if (!element) return; setLiveTime(element.currentTime); raf.current = requestAnimationFrame(follow) }
+  const stopFollow = () => { cancelAnimationFrame(raf.current); setLiveTime(null) }
+  useEffect(() => () => cancelAnimationFrame(raf.current), [])
+  const viewTime = liveTime ?? time
+  // Что видно над видео. Редактор кадра показывает всё (точные кадры), иначе боксы не поправить.
   const boxMode = editing ? 'all' : ui.boxMode
+  const viewBoxes = editing ? boxes : boxesAt(frames, viewTime)
   const active = events.filter(item => (item.kind === 'violation' || item.kind === 'warning')
-    && time >= item.start - eventWindowSec && time <= item.end + eventWindowSec)
+    && viewTime >= item.start - eventWindowSec && viewTime <= item.end + eventWindowSec)
     .sort((a, b) => (a.kind === 'violation' ? 0 : 1) - (b.kind === 'violation' ? 0 : 1))
   const eventOf = (box: BoxView) => active.find(item => item.classes?.length ? item.classes.includes(box.cls) : !serviceClasses.has(box.cls))
   const shown = boxMode === 'hidden' ? [] : boxMode === 'all'
-    ? boxes.filter(box => editing || !ui.hiddenClasses.includes(box.cls))
-    : boxes.filter(box => !serviceClasses.has(box.cls) && eventOf(box))
-  const present = Object.entries(source.reduce<Record<string, number>>((acc, box) => ({ ...acc, [box.cls]: (acc[box.cls] || 0) + 1 }), {})).sort()
+    ? viewBoxes.filter(box => editing || !ui.hiddenClasses.includes(box.cls))
+    : viewBoxes.filter(box => !serviceClasses.has(box.cls) && eventOf(box))
+  const present = Object.entries(viewBoxes.reduce<Record<string, number>>((acc, box) => ({ ...acc, [box.cls]: (acc[box.cls] || 0) + 1 }), {})).sort()
   const dirty = !!ui.boxDrafts[key]
   const pointer = useRef<{ mode: 'draw' | 'move' | 'resize'; start: [number, number]; id: string; original?: BoxView['bbox'] } | null>(null)
   const media = useRef<HTMLDivElement>(null)
@@ -116,7 +192,7 @@ function BoxCanvas({ video, time, allBoxes, events, editing, tool, setTool, sele
     <div className="canvas-toolbar"><strong>{video.camera} / {editing ? 'редактор кадра' : 'видеозапись'}</strong>{editing && <div className="tool-buttons"><button className={tool === 'select' ? 'active' : ''} onClick={() => setTool('select')}><MousePointer2 size={15} /> Выбор</button><button className={tool === 'box' ? 'active' : ''} onClick={() => setTool('box')}><Maximize2 size={15} /> Бокс</button><button className={tool === 'zone' ? 'active' : ''} onClick={() => setTool('zone')}><Layers3 size={15} /> Зона</button></div>}{!editing && <div className="box-mode" role="radiogroup" aria-label="Боксы над видео">{boxModes.map(mode => <button key={mode.id} role="radio" aria-checked={ui.boxMode === mode.id} className={ui.boxMode === mode.id ? 'active' : ''} onClick={() => ui.setBoxMode(mode.id)}><mode.icon size={14} /> {mode.label}</button>)}</div>}</div>
     {!editing && ui.boxMode === 'all' && present.length > 0 && <div className="class-chips" aria-label="Классы на кадре">{present.map(([cls, count]) => <button key={cls} aria-pressed={!ui.hiddenClasses.includes(cls)} className={ui.hiddenClasses.includes(cls) ? 'off' : ''} onClick={() => ui.toggleClass(cls)}>{cls} <b>{count}</b></button>)}</div>}
     <div className="stage"><div className="media-window" ref={media} style={{ aspectRatio: String(video.width) + ' / ' + String(video.height) }}>
-      {video.streamUrl ? <video src={video.streamUrl} playsInline preload="metadata" id="record-video" onLoadedMetadata={event => { event.currentTarget.currentTime = useUi.getState().playbackTime }} onTimeUpdate={event => ui.setPlaybackTime(event.currentTarget.currentTime)} /> : video.frameUrl ? <img src={video.frameUrl} alt="Кадр кассовой зоны" /> : <div className="missing-frame">Кадр записи недоступен</div>}
+      {video.streamUrl ? <video ref={player} src={video.streamUrl} playsInline preload="metadata" id="record-video" onPlay={() => { cancelAnimationFrame(raf.current); raf.current = requestAnimationFrame(follow) }} onPause={stopFollow} onEnded={stopFollow} onLoadedMetadata={event => { event.currentTarget.currentTime = useUi.getState().playbackTime }} onTimeUpdate={event => ui.setPlaybackTime(event.currentTarget.currentTime)} /> : video.frameUrl ? <img src={video.frameUrl} alt="Кадр кассовой зоны" /> : <div className="missing-frame">Кадр записи недоступен</div>}
       <span className="camera-stamp">● {video.camera.toUpperCase()} · {shortDate(video.recordedAt)}</span>
       {(editing || boxMode !== 'hidden') && <div className={'box-layer' + (editing ? ' editable' : '')} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
         {shown.map(box => { const hit = boxMode === 'violations' ? eventOf(box) : undefined; return <div key={box.id} data-box-id={box.id} className={'annotation ' + (box.cls === 'ignore_zone' ? 'zone' : '') + (hit ? ' ' + hit.kind : '') + (selected === box.id ? ' selected' : '')} style={{ left: box.bbox[0] * 100 + '%', top: box.bbox[1] * 100 + '%', width: (box.bbox[2] - box.bbox[0]) * 100 + '%', height: (box.bbox[3] - box.bbox[1]) * 100 + '%' }}><span>{hit ? box.cls + ' · ' + hit.title : box.cls}</span>{editing && selected === box.id && <i data-resize aria-hidden="true" />}</div> })}
