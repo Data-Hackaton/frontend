@@ -47,6 +47,7 @@ interface ApiSample { id: number; video_id: string; start: number; end: number; 
 interface ApiEventType {
   id: string; title: string; description: string; observable: string; kind: EventKind; custom: boolean
   status: 'published' | 'draft'; samples: ApiSample[]
+  procedures?: { id: string; title: string; check: string[]; limits: string | null; steps: { action: string; observability: string | null }[] }[]
 }
 interface ApiBox { id: number; t: number; cls: string; bbox: [number, number, number, number]; conf: number | null; source: string }
 interface ApiToken { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
@@ -146,6 +147,8 @@ export const apiGateway: VideoAuditGateway = {
       id: t.id, title: t.title, description: t.description, observable: t.observable, kind: t.kind, custom: t.custom,
       status: t.status,
       samples: t.samples.map(s => ({ id: String(s.id), videoId: s.video_id, start: s.start, end: s.end, review: s.review })),
+      procedures: (t.procedures ?? []).map(p => ({ id: p.id, title: p.title, check: p.check, limits: p.limits ?? undefined,
+        steps: p.steps.map(step => ({ action: step.action, observability: step.observability ?? undefined })) })),
     }))
     const tokens: TokenView[] = apiTokens.map(t => ({
       id: String(t.id), name: t.name, prefix: t.prefix, createdAt: t.created_at,

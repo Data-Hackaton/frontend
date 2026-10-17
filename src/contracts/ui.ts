@@ -63,6 +63,15 @@ export interface EventSampleView {
   review: 'pending' | 'approved' | 'rejected'
 }
 
+// Процедура проверки из нормативного корпуса (data_prepare/reference/topics.yaml)
+export interface ProcedureView {
+  id: string
+  title: string
+  check: string[]
+  limits?: string
+  steps: { action: string; observability?: string }[]
+}
+
 export interface EventTypeView {
   id: string
   title: string
@@ -72,6 +81,7 @@ export interface EventTypeView {
   custom: boolean
   status: 'published' | 'draft'
   samples: EventSampleView[]
+  procedures?: ProcedureView[]
 }
 
 export interface TokenView {
