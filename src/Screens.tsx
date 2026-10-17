@@ -1,38 +1,17 @@
 import { useState } from 'react'
-import type { ReactNode } from 'react'
-import { CalendarDays, Camera, ChevronLeft, ChevronRight, Clapperboard, Flag, Layers3, Plus, Search, ShieldCheck, UploadCloud, X } from 'lucide-react'
+import './components/arc/foundation.css'
+import { CalendarDays, Camera, ChevronLeft, ChevronRight, Layers3, Plus, Search, ShieldCheck, UploadCloud, X } from 'lucide-react'
 import { Button } from './components/arc/button/button'
 import { Badge } from './components/arc/badge/badge'
 import { Input } from './components/arc/input/input'
 import { FileDropzone } from './components/arc/file-dropzone/file-dropzone'
-import type { EventKind, VideoView, WorkspaceSnapshot } from './contracts/ui'
+import type { EventKind, WorkspaceSnapshot } from './contracts/ui'
 import { gateway } from './api/gateway'
 import { ProcedureChecklist } from './Procedure'
 import { dayKey, kindLabel, shortDate, shortTime, timecode } from './lib/format'
+import { Empty, VideoRow } from './ScreenShared'
 import { useUi } from './state/ui'
 import type { Mutate } from './App'
-
-export function Empty({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return <div className="empty-state"><span className="empty-icon">{icon}</span><h3>{title}</h3><p>{children}</p></div>
-}
-
-function VideoRow({ video, count, mode = 'view' }: { video: VideoView; count: number; mode?: 'view' | 'audit' }) {
-  const ui = useUi()
-  return <div className="video-row"><button className="video-row-main" onClick={() => ui.navigate('workspace', { videoId: video.id, mode })}><span className="video-thumb">{video.frameUrl ? <img src={video.frameUrl} alt="" /> : <Clapperboard size={20} />}</span><span><strong>{video.title}</strong><small>{shortDate(video.recordedAt)} · {shortTime(video.recordedAt)} · {timecode(video.duration)}</small></span></button><span className="video-row-status">{video.job?.status === 'processing' || video.job?.status === 'queued' ? <Badge tone="info">Обработка</Badge> : count ? <button className="attention-link" onClick={() => ui.navigate('workspace', { videoId: video.id, mode: 'audit' })}>{count} вопросов</button> : <Badge tone="success">Без вопросов</Badge>}</span></div>
-}
-
-export function Overview({ data }: { data: WorkspaceSnapshot }) {
-  const ui = useUi()
-  const pending = data.events.filter(event => event.review === 'pending')
-  const recent = [...data.videos].sort((a, b) => b.recordedAt.localeCompare(a.recordedAt)).slice(0, 3)
-  const processing = data.videos.filter(video => video.job?.status === 'processing' || video.job?.status === 'queued').length
-  return <div className="page-stack"><header className="page-header overview-header"><div><p className="eyebrow">Видеоаудит кассовых операций</p><h1>Контроль каждой операции,<br />внимание к каждому вопросу.</h1><p className="lead">Загрузите запись, проверьте найденные события и сохраните решение для обучения системы.</p></div><Button onClick={() => ui.navigate('upload')}><UploadCloud size={17} /> Загрузить видео</Button></header>
-    <div className="overview-stats"><button onClick={() => ui.navigate('attention')}><span>Требует внимания</span><strong>{pending.length}</strong><small>вопросов ждут решения</small><Flag size={21} /></button><button onClick={() => ui.navigate('archive')}><span>Записи в архиве</span><strong>{data.videos.length}</strong><small>по календарю</small><Clapperboard size={21} /></button><button onClick={() => ui.navigate('archive')}><span>На обработке</span><strong>{processing}</strong><small>{processing ? 'следите за статусом' : 'очередь свободна'}</small><ShieldCheck size={21} /></button></div>
-    <div className="two-column"><section className="surface"><div className="section-heading"><div><h2>Требует внимания</h2><p>Нерешённые замечания по записям</p></div><button className="text-action" onClick={() => ui.navigate('attention')}>Все вопросы <ChevronRight size={16} /></button></div>{recent.filter(video => pending.some(event => event.videoId === video.id)).length ? recent.filter(video => pending.some(event => event.videoId === video.id)).map(video => <VideoRow key={video.id} video={video} count={pending.filter(event => event.videoId === video.id).length} mode="audit" />) : <Empty icon={<ShieldCheck />} title="Вопросов нет">Новые сигналы появятся после обработки записи.</Empty>}</section><section className="surface operation-panel"><h2>Новая запись</h2><p>От загрузки до решения — в одной рабочей области.</p><div className="operation-steps"><div><b>1</b><span><strong>Загрузите видео</strong><small>.mov или .mp4 до 200 МБ</small></span></div><div><b>2</b><span><strong>Проверьте события</strong><small>Таймкоды, кадры и боксы</small></span></div><div><b>3</b><span><strong>Примите решение</strong><small>Подтвердите или отклоните замечание</small></span></div></div><Button variant="secondary" onClick={() => ui.navigate('upload')}>Добавить запись <Plus size={16} /></Button></section></div>
-    <section className="surface"><div className="section-heading"><div><h2>Последние записи</h2><p>Быстрый доступ к архиву</p></div><button className="text-action" onClick={() => ui.navigate('archive')}>Открыть архив <ChevronRight size={16} /></button></div>{recent.length ? recent.map(video => <VideoRow key={video.id} video={video} count={pending.filter(event => event.videoId === video.id).length} />) : <Empty icon={<Clapperboard />} title="Архив пуст">После загрузки первая запись появится здесь.</Empty>}</section>
-    <button className="camera-teaser" onClick={() => ui.navigate('cameras')}><Camera size={22} /><span><strong>Подключение камер</strong><small>Потоковая обработка появится позже</small></span><Badge tone="neutral">Скоро</Badge><ChevronRight size={18} /></button>
-  </div>
-}
 
 export function Upload({ mutate }: { mutate: Mutate }) {
   const ui = useUi()

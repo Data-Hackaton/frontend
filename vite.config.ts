@@ -7,7 +7,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig({
   plugins: [react(), VitePWA({
     registerType: 'autoUpdate',
-    includeAssets: ['assets/forte-logo.svg', 'assets/forte-logo-white.svg', 'assets/open-sans-variable.ttf'],
+    includeAssets: ['assets/forte-logo.svg', 'assets/forte-logo-white.svg', 'assets/open-sans-variable.woff2'],
     manifest: {
       name: 'Forte · Видеоаудит кассовых операций', short_name: 'Видеоаудит',
       description: 'Просмотр записей, аудит событий и разметка для обучения',
@@ -18,7 +18,7 @@ export default defineConfig({
       ],
     },
     workbox: {
-      globPatterns: ['**/*.{js,css,html,svg,png,ttf}'],
+      globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
       globIgnores: ['**/scene-fixture.svg'],
       navigateFallback: '/index.html',
       navigateFallbackDenylist: [/^\/api\//, /^\/assets\/scene-fixture\.svg$/],

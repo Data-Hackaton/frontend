@@ -2,11 +2,13 @@
 export type ReviewState = 'pending' | 'approved' | 'rejected' | 'none'
 export type EventKind = 'violation' | 'warning' | 'quality' | 'expected'
 export type WorkspaceMode = 'view' | 'audit' | 'training'
+export type DataScope = 'overview' | 'upload' | 'archive' | 'attention' | 'catalog' | 'workspace' | 'tokens' | 'cameras'
 export type PipelineStage = 'idle' | 'running' | 'ready' | 'failed'
 
 export interface JobView {
   id: string
   status: 'queued' | 'processing' | 'done' | 'failed'
+  verdict?: 'violation' | 'no_violation'
   stage?: string
   progress?: number
   error?: string
@@ -131,7 +133,7 @@ export interface EventTypeInput {
 }
 
 export interface VideoAuditGateway {
-  load(): Promise<WorkspaceSnapshot>
+  load(scope?: DataScope, videoId?: string | null): Promise<Partial<WorkspaceSnapshot>>
   upload(file: File, recordedAt?: string): Promise<void>
   reviewEvent(eventId: string, decision: 'approved' | 'rejected', comment: string): Promise<void>
   saveBoxes(videoId: string, time: number, boxes: BoxView[]): Promise<void>

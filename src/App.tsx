@@ -1,15 +1,23 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Bell, CalendarDays, Flag, Grid2X2, Layers3, Settings2, X } from 'lucide-react'
 import { gateway } from './api/gateway'
 import { emptySnapshot } from './contracts/ui'
-import type { WorkspaceSnapshot } from './contracts/ui'
+import type { DataScope, WorkspaceSnapshot } from './contracts/ui'
 import { shortDate } from './lib/format'
 import { useUi } from './state/ui'
-import { Overview, Upload, Archive, Attention, Catalog, Tokens, Cameras } from './Screens'
-import Workspace from './Workspace'
+import { Overview } from './Overview'
 import './App.css'
 
 export type Mutate = <T>(operation: () => Promise<T>, success?: string) => Promise<T | undefined>
+
+const Upload = lazy(() => import('./Screens').then(module => ({ default: module.Upload })))
+const Archive = lazy(() => import('./Screens').then(module => ({ default: module.Archive })))
+const Attention = lazy(() => import('./Screens').then(module => ({ default: module.Attention })))
+const Catalog = lazy(() => import('./Screens').then(module => ({ default: module.Catalog })))
+const Tokens = lazy(() => import('./Screens').then(module => ({ default: module.Tokens })))
+const Cameras = lazy(() => import('./Screens').then(module => ({ default: module.Cameras })))
+const Workspace = lazy(() => import('./Workspace'))
 
 const navigation = [
   { route: 'overview', label: 'Обзор', icon: Grid2X2 },
@@ -20,34 +28,52 @@ const navigation = [
 ] as const
 
 export default function App() {
-  const ui = useUi()
+  const ui = useUi(useShallow(state => ({ route: state.route, videoId: state.videoId, readNoticeIds: state.readNoticeIds,
+    notificationsOpen: state.notificationsOpen, navigate: state.navigate, toggleNotifications: state.toggleNotifications,
+    markNoticeRead: state.markNoticeRead })))
   const [data, setData] = useState<WorkspaceSnapshot>(emptySnapshot)
-  const [loading, setLoading] = useState(true)
+  const [loadedScope, setLoadedScope] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
   const [today] = useState(() => shortDate(new Date().toISOString()))
-  const refresh = async () => {
-    try { setData(await gateway.load()); setError('') }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось загрузить данные') }
-    finally { setLoading(false) }
-  }
+  const scopeKey = ui.route === 'workspace' ? `workspace/${ui.videoId ?? ''}` : ui.route
+  const request = useRef(0)
+  const invalidateRequests = useCallback(() => { request.current++ }, [])
+  const refresh = useCallback(async () => {
+    const key = scopeKey
+    const sequence = ++request.current
+    try {
+      const result = await gateway.load(ui.route as DataScope, ui.videoId)
+      if (request.current === sequence) { setData(previous => ({ ...previous, ...result })); setLoadedScope(key); setError('') }
+    } catch (cause) {
+      if (request.current === sequence) { setError(cause instanceof Error ? cause.message : 'Не удалось загрузить данные'); setLoadedScope(key) }
+    }
+  }, [scopeKey, ui.route, ui.videoId])
   useEffect(() => {
-    useUi.getState().syncHash()
-    void refresh()
+    const kickoff = window.setTimeout(() => void refresh(), 0)
+    const timer = window.setInterval(() => { if (navigator.onLine && !document.hidden) void refresh() }, 15000)
+    return () => { window.clearTimeout(kickoff); window.clearInterval(timer); invalidateRequests() }
+  }, [refresh, invalidateRequests])
+  useEffect(() => {
+    if (['overview', 'archive', 'attention', 'workspace'].includes(ui.route)) return
+    const updateNotices = () => { if (navigator.onLine && !document.hidden) void gateway.load('overview').then(result => setData(previous => ({ ...previous, ...result }))).catch(() => {}) }
+    const kickoff = window.setTimeout(updateNotices, 800)
+    const timer = window.setInterval(updateNotices, 30000)
+    return () => { window.clearTimeout(kickoff); window.clearInterval(timer) }
+  }, [ui.route])
+  useEffect(() => {
     const onHash = () => useUi.getState().syncHash()
     const onOnline = () => setOnline(navigator.onLine)
     window.addEventListener('hashchange', onHash)
     window.addEventListener('popstate', onHash)
     window.addEventListener('online', onOnline)
     window.addEventListener('offline', onOnline)
-    const timer = window.setInterval(() => { if (navigator.onLine) void refresh() }, 5000)
     return () => {
       window.removeEventListener('hashchange', onHash)
       window.removeEventListener('popstate', onHash)
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOnline)
-      window.clearInterval(timer)
     }
   }, [])
   useEffect(() => {
@@ -69,7 +95,8 @@ export default function App() {
   const unread = groups.filter(group => !ui.readNoticeIds.includes(group.video.id)).length
   const current = data.videos.find(video => video.id === ui.videoId)
   const title = ({ overview: 'Обзор', upload: 'Загрузка', archive: 'Архив', attention: 'Требует внимания', catalog: 'Каталог событий', tokens: 'Настройки', cameras: 'Камеры', workspace: current?.title || 'Запись' })[ui.route]
-  const content = ui.route === 'overview' ? <Overview data={data} /> :
+  const loading = loadedScope !== scopeKey
+  const content = ui.route === 'overview' ? <Overview data={data} loading={loading} /> :
     ui.route === 'upload' ? <Upload mutate={mutate} /> :
     ui.route === 'archive' ? <Archive data={data} /> :
     ui.route === 'attention' ? <Attention data={data} mutate={mutate} /> :
@@ -102,7 +129,7 @@ export default function App() {
       </header>
       {!online && <div className="offline-banner" role="status">Нет соединения. Просмотр интерфейса доступен; действия с записями временно недоступны.</div>}
       {error && <div className="error-banner" role="alert">{error} <button onClick={() => void refresh()}>Повторить</button></div>}
-      <main className="content">{loading ? <div className="loading-state" role="status">Загружаем рабочую область…</div> : content}</main>
+      <main className="content"><Suspense fallback={<div className="loading-state" role="status">Открываем раздел…</div>}>{loading && ui.route !== 'overview' ? <div className="loading-state" role="status">Загружаем рабочую область…</div> : content}</Suspense></main>
     </div>
     <nav className="mobile-nav" aria-label="Мобильная навигация">{navigation.map(item => { const Icon = item.icon; const active = ui.route === item.route || (ui.route === 'workspace' && item.route === 'archive') || (ui.route === 'upload' && item.route === 'overview'); return <button key={item.route} className={active ? 'active' : ''} onClick={() => ui.navigate(item.route)} aria-current={active ? 'page' : undefined}><Icon size={19} /><span>{item.route === 'attention' ? 'Вопросы' : item.route === 'tokens' ? 'Токены' : item.label}</span>{item.route === 'attention' && pending.length > 0 && <b className="question-count">{pending.length}</b>}</button> })}</nav>
     {message && <div className="app-toast" role="status">{message}<button onClick={() => setMessage('')} aria-label="Закрыть сообщение"><X size={16} /></button></div>}

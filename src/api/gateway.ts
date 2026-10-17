@@ -1,5 +1,5 @@
 import type {
-  AuditEventView, BoxView, EventKind, EventTypeView, JobView, PipelineView, TokenView, VideoAuditGateway, VideoView,
+  AuditEventView, BoxView, DataScope, EventKind, EventTypeView, JobView, PipelineView, TokenView, VideoAuditGateway, VideoView,
 } from '../contracts/ui'
 import { fixtureGateway } from '../dev/fixtureGateway'
 
@@ -7,7 +7,6 @@ import { fixtureGateway } from '../dev/fixtureGateway'
 
 const API = '/api/v1'
 const BOX_STEP_SEC = .5         // боксы модели — 2 кадра/с (детектор даёт 4); между ними интерфейс интерполирует
-const BOX_VIDEOS_PER_LOAD = 4   // сколько записей догружать за один опрос, остальные — в следующих
 
 /** Текст ошибки API: detail строкой или списком ошибок валидации. */
 async function failure(response: Response): Promise<Error> {
@@ -31,16 +30,16 @@ const json = (method: string, body: unknown): RequestInit =>
 
 // --- ответы API (snake_case) ---------------------------------------------------------------------------------------
 
-interface ApiJob { id: string; status: JobView['status']; stage?: string; progress?: number | null; error?: string | null }
+interface ApiJob { id: string; status: JobView['status']; verdict?: JobView['verdict']; stage?: string; progress?: number | null; error?: string | null }
 interface ApiVideo {
   id: string; filename: string; source: string; recorded_at: string; duration: number | null
   width: number | null; height: number | null; stream_url: string; last_job: ApiJob | null
 }
 interface ApiEvent {
-  id: number; video_id: string; type_id: string; event: string; status: 'expected' | 'warning' | 'violation'
+  id: number; job_id: string | null; video_id: string; type_id: string; event: string; status: 'expected' | 'warning' | 'violation'
   actor: string | null; object: string | null; target: string | null
   title: string | null; message: string | null; norm: string | null; t_start: number; t_end: number
-  review: AuditEventView['review']; review_comment: string | null; source: 'model' | 'human'
+  review: AuditEventView['review']; review_comment: string | null; source: 'model' | 'stub' | 'human'
   evidence: { t: number; url: string }[]
 }
 interface ApiSample { id: number; video_id: string; start: number; end: number; review: 'pending' | 'approved' | 'rejected' }
@@ -65,7 +64,7 @@ const video = (v: ApiVideo): VideoView => ({
   duration: v.duration ?? 0, width: v.width ?? 0, height: v.height ?? 0, streamUrl: v.stream_url,
   frameUrl: `${API}/videos/${v.id}/frame?t=0`,
   job: v.last_job ? {
-    id: v.last_job.id, status: v.last_job.status, stage: v.last_job.stage ?? undefined,
+    id: v.last_job.id, status: v.last_job.status, verdict: v.last_job.verdict, stage: v.last_job.stage ?? undefined,
     progress: v.last_job.progress ?? undefined, error: v.last_job.error ?? undefined,
   } : undefined,
 })
@@ -92,6 +91,20 @@ function classesFor(e: ApiEvent): string[] {
   return [...out]
 }
 
+function eventTitle(e: ApiEvent, types: Map<string, string>): string {
+  const title = e.title ?? types.get(e.type_id) ?? e.event
+  // Procedure step labels can include internal syntax and an expected action.
+  // The result title names only the action that was actually observed.
+  return e.type_id.startsWith('step:') ? title.split(/[;(]/, 1)[0].trim() : title
+}
+
+function observableDescription(e: ApiEvent): string {
+  const description = (e.message ?? '').trim()
+  if (e.source === 'human') return description
+  const withoutTime = description.replace(/^\d+(?:[.,]\d+)?\s*с:\s*/, '')
+  return withoutTime.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? withoutTime
+}
+
 // --- боксы: кэш по записи, обновляется при новом анализе и после правки ----------------------------------------------
 
 const boxCache = new Map<string, { key: string; boxes: BoxView[] }>()
@@ -107,40 +120,50 @@ async function boxesOf(v: VideoView): Promise<BoxView[]> {
   }))
 }
 
-async function loadBoxes(videos: VideoView[]): Promise<BoxView[]> {
-  const ready = videos.filter(v => v.job?.status === 'done' || boxCache.has(v.id))
-  const todo = ready.filter(v => staleBoxes.has(v.id) || boxCache.get(v.id)?.key !== v.job?.id).slice(0, BOX_VIDEOS_PER_LOAD)
-  await Promise.all(todo.map(async v => {
+async function loadBoxes(v: VideoView | undefined): Promise<BoxView[]> {
+  if (!v || (v.job?.status !== 'done' && !boxCache.has(v.id))) return []
+  if (staleBoxes.has(v.id) || boxCache.get(v.id)?.key !== v.job?.id) {
     boxCache.set(v.id, { key: v.job?.id ?? '', boxes: await boxesOf(v) })
     staleBoxes.delete(v.id)
-  }))
-  return ready.flatMap(v => boxCache.get(v.id)?.boxes ?? [])
+  }
+  return boxCache.get(v.id)?.boxes ?? []
 }
 
 // --- справочники ---------------------------------------------------------------------------------------------------
 
 let norms: Record<string, ApiNorm> | undefined
+let normsPromise: Promise<Record<string, ApiNorm>> | undefined
 async function normShort(id: string | null): Promise<string | undefined> {
   if (!id) return undefined
-  norms ??= (await call<{ norms: Record<string, ApiNorm> }>('/meta')).norms
+  norms ??= await (normsPromise ??= call<{ norms: Record<string, ApiNorm> }>('/meta').then(result => result.norms).catch(error => { normsPromise = undefined; throw error }))
   return norms[id]?.short ?? id
 }
 
 let videosById = new Map<string, VideoView>()
 
 export const apiGateway: VideoAuditGateway = {
-  async load() {
+  async load(scope: DataScope = 'overview', videoId?: string | null) {
+    if (scope === 'upload' || scope === 'cameras') return {}
+    const needVideos = scope !== 'tokens'
+    const needEvents = scope === 'overview' || scope === 'archive' || scope === 'attention' || scope === 'workspace'
+    const needTypes = scope === 'catalog' || scope === 'attention' || scope === 'workspace'
+    const pendingOnly = scope === 'overview' || scope === 'archive'
     const [apiVideos, apiEvents, apiTypes, apiTokens, apiPipeline] = await Promise.all([
-      call<ApiVideo[]>('/videos?limit=500'), call<ApiEvent[]>('/events'), call<ApiEventType[]>('/event-types'),
-      call<ApiToken[]>('/tokens'), call<ApiPipeline>('/pipeline'),
+      needVideos ? call<ApiVideo[]>('/videos?limit=500') : Promise.resolve([]),
+      needEvents ? call<ApiEvent[]>(pendingOnly ? '/review?state=pending&limit=500' : '/events') : Promise.resolve([]),
+      needTypes ? call<ApiEventType[]>('/event-types') : Promise.resolve([]),
+      scope === 'tokens' ? call<ApiToken[]>('/tokens') : Promise.resolve([]),
+      scope === 'workspace' ? call<ApiPipeline>('/pipeline') : Promise.resolve(null),
     ])
     const videos = apiVideos.map(video)
-    videosById = new Map(videos.map(v => [v.id, v]))
+    if (needVideos) videosById = new Map(videos.map(v => [v.id, v]))
     const typeTitle = new Map(apiTypes.map(t => [t.id, t.title]))
-    const events: AuditEventView[] = await Promise.all(apiEvents.map(async e => ({
-      id: String(e.id), videoId: e.video_id, typeId: e.type_id, title: e.title ?? typeTitle.get(e.type_id) ?? e.event,
-      description: e.message ?? '', kind: e.status, start: e.t_start, end: Math.max(e.t_end, e.t_start),
-      review: e.review, reviewComment: e.review_comment ?? undefined, source: e.source, rule: await normShort(e.norm),
+    const currentEvents = pendingOnly ? apiEvents.filter(e => e.source === 'human' || e.job_id === videosById.get(e.video_id)?.job?.id) : apiEvents
+    const events: AuditEventView[] = await Promise.all(currentEvents.map(async e => ({
+      id: String(e.id), videoId: e.video_id, typeId: e.type_id, title: eventTitle(e, typeTitle),
+      description: observableDescription(e), kind: e.status, start: e.t_start, end: Math.max(e.t_end, e.t_start),
+      review: e.review, reviewComment: e.review_comment ?? undefined, source: e.source === 'human' ? 'human' : 'model',
+      rule: scope === 'workspace' && e.video_id === videoId ? await normShort(e.norm) : undefined,
       evidenceUrls: e.evidence.map(x => x.url), classes: classesFor(e),
     })))
     const eventTypes: EventTypeView[] = apiTypes.map(t => ({
@@ -154,13 +177,18 @@ export const apiGateway: VideoAuditGateway = {
       id: String(t.id), name: t.name, prefix: t.prefix, createdAt: t.created_at,
       lastUsedAt: t.last_used_at ?? undefined, revokedAt: t.revoked_at ?? undefined,
     }))
-    const pipeline: PipelineView = {
+    const pipeline: PipelineView | undefined = apiPipeline ? {
       datasetVersion: apiPipeline.dataset_version ?? undefined, datasetStage: apiPipeline.dataset_stage,
       modelVersion: apiPipeline.model_version ?? undefined, trainingStage: apiPipeline.training_stage,
       batchStage: apiPipeline.batch_stage, processedVideos: apiPipeline.processed_videos,
       totalVideos: apiPipeline.total_videos, error: apiPipeline.error ?? undefined,
+    } : undefined
+    return {
+      ...(needVideos ? { videos } : {}), ...(needEvents ? { events } : {}),
+      ...(needTypes ? { eventTypes } : {}), ...(scope === 'tokens' ? { tokens } : {}),
+      ...(pipeline ? { pipeline } : {}),
+      ...(scope === 'workspace' ? { boxes: await loadBoxes(videos.find(v => v.id === videoId)) } : {}),
     }
-    return { videos, events, boxes: await loadBoxes(videos), eventTypes, tokens, pipeline }
   },
 
   async upload(file, recordedAt) {
