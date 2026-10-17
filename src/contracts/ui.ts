@@ -86,15 +86,6 @@ export interface EventTypeView {
   procedures?: ProcedureView[]
 }
 
-export interface TokenView {
-  id: string
-  name: string
-  prefix: string
-  createdAt: string
-  lastUsedAt?: string
-  revokedAt?: string
-}
-
 export interface PipelineView {
   datasetVersion?: string
   datasetStage: PipelineStage
@@ -111,7 +102,6 @@ export interface WorkspaceSnapshot {
   events: AuditEventView[]
   boxes: BoxView[]
   eventTypes: EventTypeView[]
-  tokens: TokenView[]
   pipeline: PipelineView
 }
 
@@ -143,14 +133,12 @@ export interface VideoAuditGateway {
   addSample(typeId: string, sample: { videoId: string; start: number; end: number }): Promise<void>
   reviewSample(typeId: string, sampleId: string, decision: 'approved' | 'rejected'): Promise<void>
   publishEventType(typeId: string): Promise<void>
-  createToken(name: string): Promise<string>
-  revokeToken(tokenId: string): Promise<void>
   buildDataset(): Promise<void>
   trainModel(): Promise<void>
   rerunArchive(): Promise<void>
 }
 
 export const emptySnapshot: WorkspaceSnapshot = {
-  videos: [], events: [], boxes: [], eventTypes: [], tokens: [],
+  videos: [], events: [], boxes: [], eventTypes: [],
   pipeline: { datasetStage: 'idle', trainingStage: 'idle', batchStage: 'idle', processedVideos: 0, totalVideos: 0 },
 }

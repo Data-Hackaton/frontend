@@ -1,6 +1,8 @@
 import type {
-  AuditEventView, BoxView, DataScope, EventKind, EventTypeView, JobView, PipelineView, TokenView, VideoAuditGateway, VideoView,
+  AuditEventView, BoxView, DataScope, EventKind, EventTypeView, JobView, PipelineView, VideoAuditGateway, VideoView,
 } from '../contracts/ui'
+import { useAccess, fixtureMode } from '../state/access'
+import { useUi } from '../state/ui'
 import { fixtureGateway } from '../dev/fixtureGateway'
 
 /** Адаптер интерфейса к API бэкенда /api/v1 (контракт — backend/docs/API.md). Экраны работают только через него. */
@@ -19,10 +21,16 @@ async function failure(response: Response): Promise<Error> {
   return new Error(text)
 }
 
+let requests = new AbortController()
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(API + path, init)
+  if (useAccess.getState().status !== 'ready') throw new Error('Требуется токен доступа')
+  const signal = requests.signal
+  const response = await fetch(API + path, { ...init, signal, credentials: 'same-origin', cache: 'no-store' })
+  if (response.status === 401) useAccess.getState().expire()
   if (!response.ok) throw await failure(response)
-  return (response.status === 204 ? undefined : await response.json()) as T
+  const result = response.status === 204 ? undefined : await response.json()
+  signal.throwIfAborted()
+  return result as T
 }
 
 const json = (method: string, body: unknown): RequestInit =>
@@ -49,7 +57,7 @@ interface ApiEventType {
   procedures?: { id: string; title: string; check: string[]; limits: string | null; steps: { action: string; observability: string | null }[] }[]
 }
 interface ApiBox { id: number; t: number; cls: string; bbox: [number, number, number, number]; conf: number | null; source: string }
-interface ApiToken { id: number; name: string; prefix: string; created_at: string; last_used_at: string | null; revoked_at: string | null }
+
 interface ApiPipeline {
   dataset_version: string | null; dataset_stage: PipelineView['datasetStage']; model_version: string | null
   training_stage: PipelineView['trainingStage']; batch_stage: PipelineView['batchStage']
@@ -143,16 +151,15 @@ let videosById = new Map<string, VideoView>()
 
 export const apiGateway: VideoAuditGateway = {
   async load(scope: DataScope = 'overview', videoId?: string | null) {
-    if (scope === 'upload' || scope === 'cameras') return {}
-    const needVideos = scope !== 'tokens'
+    if (scope === 'upload' || scope === 'cameras' || scope === 'tokens') return {}
+    const needVideos = true
     const needEvents = scope === 'overview' || scope === 'archive' || scope === 'attention' || scope === 'workspace'
     const needTypes = scope === 'catalog' || scope === 'attention' || scope === 'workspace'
     const pendingOnly = scope === 'overview' || scope === 'archive'
-    const [apiVideos, apiEvents, apiTypes, apiTokens, apiPipeline] = await Promise.all([
+    const [apiVideos, apiEvents, apiTypes, apiPipeline] = await Promise.all([
       needVideos ? call<ApiVideo[]>('/videos?limit=500') : Promise.resolve([]),
       needEvents ? call<ApiEvent[]>(pendingOnly ? '/review?state=pending&limit=500' : '/events') : Promise.resolve([]),
       needTypes ? call<ApiEventType[]>('/event-types') : Promise.resolve([]),
-      scope === 'tokens' ? call<ApiToken[]>('/tokens') : Promise.resolve([]),
       scope === 'workspace' ? call<ApiPipeline>('/pipeline') : Promise.resolve(null),
     ])
     const videos = apiVideos.map(video)
@@ -173,10 +180,6 @@ export const apiGateway: VideoAuditGateway = {
       procedures: (t.procedures ?? []).map(p => ({ id: p.id, title: p.title, check: p.check, limits: p.limits ?? undefined,
         steps: p.steps.map(step => ({ action: step.action, observability: step.observability ?? undefined })) })),
     }))
-    const tokens: TokenView[] = apiTokens.map(t => ({
-      id: String(t.id), name: t.name, prefix: t.prefix, createdAt: t.created_at,
-      lastUsedAt: t.last_used_at ?? undefined, revokedAt: t.revoked_at ?? undefined,
-    }))
     const pipeline: PipelineView | undefined = apiPipeline ? {
       datasetVersion: apiPipeline.dataset_version ?? undefined, datasetStage: apiPipeline.dataset_stage,
       modelVersion: apiPipeline.model_version ?? undefined, trainingStage: apiPipeline.training_stage,
@@ -185,7 +188,7 @@ export const apiGateway: VideoAuditGateway = {
     } : undefined
     return {
       ...(needVideos ? { videos } : {}), ...(needEvents ? { events } : {}),
-      ...(needTypes ? { eventTypes } : {}), ...(scope === 'tokens' ? { tokens } : {}),
+      ...(needTypes ? { eventTypes } : {}),
       ...(pipeline ? { pipeline } : {}),
       ...(scope === 'workspace' ? { boxes: await loadBoxes(videos.find(v => v.id === videoId)) } : {}),
     }
@@ -238,18 +241,23 @@ export const apiGateway: VideoAuditGateway = {
     await call(`/event-types/${typeId}/publish`, { method: 'POST' })
   },
 
-  async createToken(name) {
-    return (await call<{ token: string }>('/tokens', json('POST', { name }))).token
-  },
-
-  async revokeToken(tokenId) {
-    await call(`/tokens/${tokenId}`, { method: 'DELETE' })
-  },
-
   async buildDataset() { await call('/pipeline/dataset', { method: 'POST' }) },
   async trainModel() { await call('/pipeline/train', { method: 'POST' }) },
   async rerunArchive() { await call('/pipeline/rerun', { method: 'POST' }) },
 }
 
 /** В разработке — фикстуры (pnpm dev), с VITE_API=1 — живой бэкенд через прокси Vite; в сборке — всегда API. */
-export const gateway: VideoAuditGateway = import.meta.env.DEV && import.meta.env.VITE_API !== '1' ? fixtureGateway : apiGateway
+export const gateway: VideoAuditGateway = fixtureMode ? fixtureGateway : apiGateway
+
+// A new access session starts with no data or in-flight requests from the previous one.
+useAccess.subscribe((state, previous) => {
+  if (state.status === previous.status) return
+  requests.abort()
+  requests = new AbortController()
+  boxCache.clear()
+  staleBoxes.clear()
+  videosById.clear()
+  norms = undefined
+  normsPromise = undefined
+  if (state.status !== 'ready') useUi.setState({ boxDrafts: {}, readNoticeIds: [], notificationsOpen: false, eventId: null })
+})

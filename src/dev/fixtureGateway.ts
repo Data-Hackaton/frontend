@@ -32,10 +32,7 @@ const boxes: BoxView[] = [
   { id: 'b4', videoId: 'r1', time: 43.4, cls: 'banknotes', bbox: [.38,.47,.58,.55], source: 'model' },
 ]
 
-let data: WorkspaceSnapshot = { videos, events, boxes, eventTypes, tokens: [
-  { id: 't1', name: 'Бот загрузки', prefix: 'fva_8H3…', createdAt: now.toISOString(), lastUsedAt: now.toISOString() },
-  { id: 't2', name: 'Автоматизация отчётов', prefix: 'fva_M2Q…', createdAt: '2026-10-16T11:00:00Z' },
-], pipeline: { datasetStage: 'idle', trainingStage: 'idle', batchStage: 'idle', processedVideos: 0, totalVideos: videos.length } }
+let data: WorkspaceSnapshot = { videos, events, boxes, eventTypes, pipeline: { datasetStage: 'idle', trainingStage: 'idle', batchStage: 'idle', processedVideos: 0, totalVideos: videos.length } }
 const copy = () => structuredClone(data)
 const uid = (prefix: string) => `${prefix}${Math.random().toString(36).slice(2, 9)}`
 const typeById = (id: string) => data.eventTypes.find(item => item.id === id)
@@ -85,12 +82,6 @@ export const fixtureGateway: VideoAuditGateway = {
     const first = type.samples[0]
     data.events.push({ id: uid('manual-'), videoId: first.videoId, typeId, title: type.title, description: type.description, kind: type.kind, start: first.start, end: first.end, review: 'pending', source: 'human' })
   },
-  async createToken(name) {
-    const secret = `fva_${Array.from(crypto.getRandomValues(new Uint8Array(20)), byte => byte.toString(16).padStart(2, '0')).join('')}`
-    data.tokens.unshift({ id: uid('t'), name, prefix: `${secret.slice(0, 11)}…`, createdAt: new Date().toISOString() })
-    return secret
-  },
-  async revokeToken(tokenId) { const token = data.tokens.find(item => item.id === tokenId); if (token) token.revokedAt = new Date().toISOString() },
   async buildDataset() { data.pipeline.datasetStage = 'ready'; data.pipeline.datasetVersion = `v${Number(data.pipeline.datasetVersion?.slice(1) || 0) + 1}`; data.pipeline.trainingStage = 'idle'; data.pipeline.batchStage = 'idle' },
   async trainModel() { if (data.pipeline.datasetStage !== 'ready') throw new Error('Сначала соберите набор данных'); data.pipeline.trainingStage = 'running'; await new Promise(resolve => setTimeout(resolve, 650)); data.pipeline.trainingStage = 'ready'; data.pipeline.modelVersion = `v${Number(data.pipeline.modelVersion?.slice(1) || 0) + 1}` },
   async rerunArchive() { if (data.pipeline.trainingStage !== 'ready') throw new Error('Сначала обучите модель'); data.pipeline.batchStage = 'running'; data.pipeline.processedVideos = 0; await new Promise(resolve => setTimeout(resolve, 650)); data.pipeline.processedVideos = data.videos.length; data.pipeline.batchStage = 'ready' },

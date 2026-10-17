@@ -1,11 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Bell, CalendarDays, Flag, Grid2X2, Layers3, Settings2, X } from 'lucide-react'
+import { Bell, CalendarDays, Flag, Grid2X2, Layers3, LogOut, Settings2, X } from 'lucide-react'
 import { gateway } from './api/gateway'
 import { emptySnapshot } from './contracts/ui'
 import type { DataScope, WorkspaceSnapshot } from './contracts/ui'
 import { shortDate } from './lib/format'
 import { useUi } from './state/ui'
+import { useAccess } from './state/access'
 import { Overview } from './Overview'
 import './App.css'
 
@@ -28,6 +29,7 @@ const navigation = [
 ] as const
 
 export default function App() {
+  const { logout, busy: accessBusy, error: accessError } = useAccess()
   const ui = useUi(useShallow(state => ({ route: state.route, videoId: state.videoId, readNoticeIds: state.readNoticeIds,
     notificationsOpen: state.notificationsOpen, navigate: state.navigate, toggleNotifications: state.toggleNotifications,
     markNoticeRead: state.markNoticeRead })))
@@ -101,7 +103,7 @@ export default function App() {
     ui.route === 'archive' ? <Archive data={data} /> :
     ui.route === 'attention' ? <Attention data={data} mutate={mutate} /> :
     ui.route === 'catalog' ? <Catalog data={data} /> :
-    ui.route === 'tokens' ? <Tokens data={data} mutate={mutate} /> :
+    ui.route === 'tokens' ? <Tokens /> :
     ui.route === 'cameras' ? <Cameras /> :
     <Workspace data={data} mutate={mutate} />
   return <div className="app-shell">
@@ -124,9 +126,10 @@ export default function App() {
             <button className="notice-button" onClick={ui.toggleNotifications} aria-label={'Уведомления, непрочитано: ' + unread} aria-expanded={ui.notificationsOpen}><Bell size={18} />{unread > 0 && <b>{unread}</b>}</button>
             {ui.notificationsOpen && <div className="notice-panel"><div className="notice-head"><strong>Уведомления</strong><button onClick={ui.toggleNotifications} aria-label="Закрыть"><X size={17} /></button></div><p>{unread} непрочитано · {pending.length} вопросов ждут решения</p>{groups.length ? groups.map(group => <button className="notice-item" key={group.video.id} onClick={() => { ui.markNoticeRead(group.video.id); ui.navigate('workspace', { videoId: group.video.id, mode: 'audit' }) }}><span className={ui.readNoticeIds.includes(group.video.id) ? 'read-dot' : 'unread-dot'} /><span><strong>{group.video.title}</strong><small>{group.events.length} вопросов · {shortDate(group.video.recordedAt)}</small></span></button>) : <div className="notice-empty">Новых уведомлений нет</div>}</div>}
           </div>
-          <span className="product-pill">Видеоаналитика</span>
+          <button className="access-logout" onClick={() => void logout()} disabled={accessBusy}><LogOut size={16} />Выйти</button>
         </div>
       </header>
+      {accessError && <div className="error-banner" role="alert">{accessError}</div>}
       {!online && <div className="offline-banner" role="status">Нет соединения. Просмотр интерфейса доступен; действия с записями временно недоступны.</div>}
       {error && <div className="error-banner" role="alert">{error} <button onClick={() => void refresh()}>Повторить</button></div>}
       <main className="content"><Suspense fallback={<div className="loading-state" role="status">Открываем раздел…</div>}>{loading && ui.route !== 'overview' ? <div className="loading-state" role="status">Загружаем рабочую область…</div> : content}</Suspense></main>
