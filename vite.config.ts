@@ -21,7 +21,9 @@ export default defineConfig({
       globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
       globIgnores: ['**/scene-fixture.svg'],
       navigateFallback: '/index.html',
-      navigateFallbackDenylist: [/^\/api\//, /^\/assets\/scene-fixture\.svg$/],
+      // соседи по домену за gateway (infra/gateway/nginx.conf): Swagger, Temporal UI, презентация — не интерфейс
+      navigateFallbackDenylist: [/^\/api\//, /^\/assets\/scene-fixture\.svg$/, /^\/(docs|redoc|openapi\.json)(\/|$)/,
+        /^\/(temporal|pitch)(\/|$)/],
       runtimeCaching: [],
     },
   })],
