@@ -5,7 +5,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   server: {
-    // backend: uv run backend → 127.0.0.1:8000
-    proxy: { '/api': 'http://127.0.0.1:8000' },
+    // backend: docker compose --profile app up (infra) → 127.0.0.1:48000
+    proxy: { '/api': 'http://127.0.0.1:48000' },
   },
 })

@@ -11,7 +11,7 @@ React + Vite + TypeScript. Пользовательский сценарий и�
 
 ```sh
 pnpm install
-pnpm dev      # http://localhost:5173, /api проксируется на backend 127.0.0.1:8000
+pnpm dev      # http://localhost:5173, /api проксируется на backend 127.0.0.1:48000
 pnpm build    # dist/ отдаёт backend (FRONTEND_DIST)
 ```
 
